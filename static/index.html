@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>热点聚合</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <header class="header">
+    <div class="header-inner">
+      <div>
+        <h1>热点聚合</h1>
+        <p class="subtitle" id="updated-at">加载中…</p>
+      </div>
+      <div class="toolbar">
+        <select id="limit" aria-label="条数">
+          <option value="10">10 条</option>
+          <option value="20" selected>20 条</option>
+          <option value="30">30 条</option>
+        </select>
+        <button type="button" id="refresh">刷新</button>
+      </div>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs" aria-label="平台筛选"></nav>
+
+  <main class="main">
+    <div id="content" class="content loading">正在加载数据…</div>
+  </main>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
