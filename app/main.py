@@ -4,11 +4,12 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.models import HotspotCollection, PlatformInfo
+from app.models import DashboardStats, HotspotCollection, PlatformInfo
 from app.plugins.loader import PluginLoader
 from app.plugins.registry import PluginRegistry
 from app.schemas import PluginActionResponse, PluginLoadRequest
-from app.services.hotspot_service import HotspotService
+from app.services.cache import cache, cache_hit_rate
+from app.services.hotspot_service import HotspotService, avg_response_time_ms
 from app.services.plugin_manager import PluginManager
 
 
@@ -37,6 +38,27 @@ def dashboard() -> FileResponse:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/stats", response_model=DashboardStats)
+def get_stats() -> DashboardStats:
+    platforms = registry.platforms()
+    # Fast count from cache only — avoids triggering external fetches
+    total_items = 0
+    for plugin in registry.enabled_plugins():
+        cached = cache.get_json(f"hotspots:{plugin.name}:20")
+        if cached:
+            try:
+                collection = HotspotCollection.model_validate(cached)
+                total_items += sum(len(p.items) for p in collection.platforms)
+            except Exception:
+                pass
+    return DashboardStats(
+        platform_count=len(platforms),
+        total_hotspots=total_items,
+        avg_response_time_ms=round(avg_response_time_ms(), 1),
+        cache_hit_rate=round(cache_hit_rate(), 3),
+    )
 
 
 @app.get("/platforms", response_model=list[PlatformInfo])

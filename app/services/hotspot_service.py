@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+from time import monotonic
+
 from app.core.config import settings
 from app.models import HotspotCollection, PlatformHotspots
 from app.plugins.registry import PluginRegistry
-from app.services.cache import cache
+from app.services.cache import cache, cache_hit_rate
+
+
+_response_times: list[float] = []
+
+
+def avg_response_time_ms() -> float:
+    if not _response_times:
+        return 0.0
+    return sum(_response_times) / len(_response_times) * 1000
 
 
 class HotspotService:
@@ -25,6 +36,7 @@ class HotspotService:
             if cached:
                 return HotspotCollection.model_validate(cached)
 
+        t0 = monotonic()
         try:
             items = plugin.fetch(limit=limit)
             payload = HotspotCollection(
@@ -48,6 +60,10 @@ class HotspotService:
                     )
                 ]
             )
+        elapsed = monotonic() - t0
+        _response_times.append(elapsed)
+        if len(_response_times) > 200:
+            _response_times.pop(0)
 
         cache.set_json(cache_key, payload.model_dump(mode="json"), settings.cache_ttl_seconds)
         return payload

@@ -35,3 +35,10 @@ class PlatformHotspots(BaseModel):
 class HotspotCollection(BaseModel):
     fetched_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     platforms: list[PlatformHotspots]
+
+
+class DashboardStats(BaseModel):
+    platform_count: int
+    total_hotspots: int
+    avg_response_time_ms: float
+    cache_hit_rate: float
