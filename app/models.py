@@ -42,3 +42,14 @@ class DashboardStats(BaseModel):
     total_hotspots: int
     avg_response_time_ms: float
     cache_hit_rate: float
+
+
+class ComponentStatus(BaseModel):
+    name: str
+    status: str
+    detail: str = ""
+
+
+class SystemStatus(BaseModel):
+    uptime_seconds: int
+    components: list[ComponentStatus]

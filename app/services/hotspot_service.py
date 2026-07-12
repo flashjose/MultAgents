@@ -37,6 +37,7 @@ class HotspotService:
                 return HotspotCollection.model_validate(cached)
 
         t0 = monotonic()
+        ok = True
         try:
             items = plugin.fetch(limit=limit)
             payload = HotspotCollection(
@@ -49,6 +50,7 @@ class HotspotService:
                 ]
             )
         except Exception as exc:
+            ok = False
             payload = HotspotCollection(
                 platforms=[
                     PlatformHotspots(
@@ -65,5 +67,8 @@ class HotspotService:
         if len(_response_times) > 200:
             _response_times.pop(0)
 
-        cache.set_json(cache_key, payload.model_dump(mode="json"), settings.cache_ttl_seconds)
+        # Cache successes for the full TTL; cache errors only briefly so a transient
+        # failure recovers on the next request instead of sticking for cache_ttl_seconds.
+        ttl = settings.cache_ttl_seconds if ok else settings.error_cache_ttl_seconds
+        cache.set_json(cache_key, payload.model_dump(mode="json"), ttl)
         return payload

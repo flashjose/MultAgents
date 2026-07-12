@@ -4,13 +4,14 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.models import DashboardStats, HotspotCollection, PlatformInfo
+from app.models import DashboardStats, HotspotCollection, PlatformInfo, SystemStatus
 from app.plugins.loader import PluginLoader
 from app.plugins.registry import PluginRegistry
 from app.schemas import PluginActionResponse, PluginLoadRequest
 from app.services.cache import cache, cache_hit_rate
 from app.services.hotspot_service import HotspotService, avg_response_time_ms
 from app.services.plugin_manager import PluginManager
+from app.services.system_status import collect_status
 
 
 registry = PluginRegistry()
@@ -38,6 +39,11 @@ def dashboard() -> FileResponse:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/system/status", response_model=SystemStatus)
+def system_status() -> SystemStatus:
+    return SystemStatus(**collect_status())
 
 
 @app.get("/stats", response_model=DashboardStats)
