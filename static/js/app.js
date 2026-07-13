@@ -26,7 +26,7 @@ const state = {
 // ------------------------------- Constants --------------------------------
 const PLATFORM_COLORS = {
   zhihu: "#0066FF", weibo: "#E6162D", bilibili: "#FB7299",
-  douyin: "#111111", toutiao: "#E13D3D", ithome: "#D9382B", baidu: "#2932E1",
+  douyin: "#12B7B0", toutiao: "#E13D3D", ithome: "#D9382B", baidu: "#2932E1",
 };
 const PLATFORM_INITIALS = {
   zhihu: "知", weibo: "微", bilibili: "B", douyin: "抖",
