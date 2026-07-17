@@ -1,36 +1,102 @@
 /* ==========================================================================
-   HotHub — Dashboard Controller
-   Reuses the data layer (api / fetchStats / fetchPlatforms / fetchHotspots),
-   adds theme control, ranking tabs, favorites, categories, trend & system status.
+   HotHub — Swiss Minimalism (纯黑白极简主义)
+   Text-driven ranked list, DOM-persistent filtering, skeleton loading,
+   dual theme (light/dark) with system preference detection.
    ========================================================================== */
 
+// ------------------------------- Theme ------------------------------------
+const THEME_KEY = "hothub-theme";
+
+function getTheme() {
+  const stored = localStorage.getItem(THEME_KEY);
+  if (stored === "light" || stored === "dark") return stored;
+  return "system";
+}
+
+function resolveTheme(stored) {
+  if (stored === "light" || stored === "dark") return stored;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function setDOMTheme(resolved) {
+  document.documentElement.setAttribute("data-theme", resolved);
+}
+
+function applyTheme(resolved) {
+  setDOMTheme(resolved);
+}
+
+/** Ink-spread reveal: circle expands from the theme button */
+function applyThemeInk(resolved, btn) {
+  // Fall back to instant switch if View Transitions not supported
+  if (!document.startViewTransition) {
+    setDOMTheme(resolved);
+    return;
+  }
+
+  // Capture the button's center as the circle origin
+  const rect = btn.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  // Radius = distance to the farthest corner of the viewport
+  const r = Math.hypot(
+    Math.max(cx, window.innerWidth - cx),
+    Math.max(cy, window.innerHeight - cy)
+  );
+
+  // Old view snaps the outgoing theme, new view reveals the incoming theme
+  const transition = document.startViewTransition(() => setDOMTheme(resolved));
+
+  // Suppress default crossfade; use our clip-circle instead
+  transition.ready.then(() => {
+    document.documentElement.animate(
+      [
+        { clipPath: `circle(0 at ${cx}px ${cy}px)` },
+        { clipPath: `circle(${r}px at ${cx}px ${cy}px)` }
+      ],
+      {
+        duration: 500,
+        easing: 'cubic-bezier(0.4, 0, 0.2, 1)',
+        pseudoElement: '::view-transition-new(root)'
+      }
+    );
+  });
+}
+
+function toggleTheme() {
+  const current = getTheme();
+  const next = current === "system" ? "light" : current === "light" ? "dark" : "system";
+  localStorage.setItem(THEME_KEY, next);
+
+  const btn = document.getElementById("btn-theme");
+  applyThemeInk(resolveTheme(next), btn);
+}
+
+function initTheme() {
+  // On first load, apply instantly (no animation — page is still painting)
+  setDOMTheme(resolveTheme(getTheme()));
+
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if (getTheme() === "system") setDOMTheme(resolveTheme("system"));
+  });
+}
+
 // ------------------------------- State ------------------------------------
+const PAGE_SIZE = 20;
+
 const state = {
   platforms: [],
-  byPlatform: {},          // name -> enriched items[]
+  allItems: [],            // enriched, interleaved by rank across platforms
   platformStatus: {},      // name -> source_status
-  allItems: [],            // flattened & enriched
-  stats: null,
-  system: null,
-  rankTab: "composite",    // composite | latest | hottest
-  rankPlatform: null,      // optional platform filter (from platform card click)
-  rankLimit: 15,
-  searchQuery: "",
-  favorites: new Set(loadFavorites()),
-  trendSamples: [],
-  apiCalls: 0,
-  uptimeSeconds: 0,
-  lastUpdated: null,
+  catFilter: "全部",
+  platformFilter: "全部",
+  page: 1,
 };
 
 // ------------------------------- Constants --------------------------------
 const PLATFORM_COLORS = {
   zhihu: "#0066FF", weibo: "#E6162D", bilibili: "#FB7299",
   douyin: "#12B7B0", toutiao: "#E13D3D", ithome: "#D9382B", baidu: "#2932E1",
-};
-const PLATFORM_INITIALS = {
-  zhihu: "知", weibo: "微", bilibili: "B", douyin: "抖",
-  toutiao: "头", ithome: "IT", baidu: "百",
 };
 
 const CATEGORIES = [
@@ -40,267 +106,65 @@ const CATEGORIES = [
   { key: "财经", kw: ["财经", "股", "基金", "经济", "金融", "gdp", "房价", "楼市", "央行", "利率", "黄金", "上市", "融资", "收购", "美元", "汇率"] },
   { key: "娱乐", kw: ["娱乐", "明星", "电影", "电视剧", "综艺", "演唱会", "音乐", "票房", "网红", "偶像", "演员", "导演", "热搜"] },
   { key: "体育", kw: ["体育", "比赛", "足球", "篮球", "nba", "世界杯", "奥运", "冠军", "联赛", "球员", "夺冠", "决赛", "国足"] },
-  { key: "社会", kw: [] }, // catch-all
+  { key: "社会", kw: [] },
 ];
+const CAT_ORDER = ["全部", "科技", "AI", "互联网", "娱乐", "财经", "体育", "社会"];
 
-const STATUS_MAP = {
-  online: { cls: "dot-ok", text: "在线" },
-  memory: { cls: "dot-info", text: "内存回退" },
-  not_configured: { cls: "dot-muted", text: "未接入" },
-  offline: { cls: "dot-bad", text: "离线" },
-};
-const COMP_LABEL = { fastapi: "FastAPI", redis: "Redis", mysql: "MySQL" };
-
-const VIEW_META = {
-  trending: { title: "全网热点", desc: "跨平台聚合热榜视图正在建设中。" },
-  live: { title: "实时热榜", desc: "分平台实时滚动榜单即将上线。" },
-  search: { title: "高级搜索", desc: "多维度搜索（关键词 / 平台 / 时间）开发中。" },
-  analytics: { title: "数据分析", desc: "趋势与分类深度分析看板开发中。" },
-  favorites: { title: "我的收藏", desc: "收藏管理视图开发中，当前可在榜单中收藏条目。" },
-  settings: { title: "系统设置", desc: "主题、刷新频率与数据源配置开发中。" },
-};
+const FLAME = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>';
 
 // ------------------------------- DOM refs ---------------------------------
 const $ = (s) => document.querySelector(s);
-const $$ = (s) => document.querySelectorAll(s);
 const dom = {
-  platformRail: $("#platform-rail"),
-  rankBody: $("#rank-body"),
-  rankTabs: $("#rank-tabs"),
-  boardCount: $("#board-count"),
-  boardFoot: $("#board-foot"),
-  btnMore: $("#btn-more"),
-  cats: $("#cats"),
-  trendCurrent: $("#trend-current"),
-  trendDelta: $("#trend-delta"),
-  trendLine: $("#trend-line"),
-  trendArea: $("#trend-area"),
-  sysbarItems: $("#sysbar-items"),
-  sysbarUptime: $("#sysbar-uptime"),
-  msScraped: $("#ms-scraped"),
-  msApi: $("#ms-api"),
-  msCache: $("#ms-cache"),
-  msUptime: $("#ms-uptime"),
-  ssSystem: $("#ss-system"),
-  ssApi: $("#ss-api"),
-  ssCache: $("#ss-cache"),
-  ssUpdated: $("#ss-updated"),
-  search: $("#search"),
+  catChips: $("#cat-chips"),
+  platformChips: $("#platform-chips"),
+  gallery: $("#gallery"),
+  pager: $("#pager"),
   btnRefresh: $("#btn-refresh"),
-  btnTheme: $("#btn-theme"),
   btnRetry: $("#btn-retry"),
   loading: $("#loading-state"),
   error: $("#error-state"),
   errorMsg: $("#error-msg"),
-  placeholder: $("#placeholder"),
-  placeholderTitle: $("#placeholder-title"),
-  placeholderDesc: $("#placeholder-desc"),
-  placeholderBack: $("#placeholder-back"),
 };
 
 // ------------------------------- API layer --------------------------------
 async function api(path, opts = {}) {
-  state.apiCalls += 1;
-  if (dom.msApi) dom.msApi.textContent = state.apiCalls;
   const res = await fetch(path, opts);
   if (!res.ok) throw new Error((await res.text()) || `${res.status}`);
   return res.json();
-}
-
-async function fetchStats() {
-  try { state.stats = await api("/stats"); } catch { state.stats = null; }
 }
 
 async function fetchPlatforms() {
   state.platforms = await api("/platforms");
 }
 
-async function fetchSystem() {
-  try {
-    state.system = await api("/system/status");
-    state.uptimeSeconds = state.system.uptime_seconds || 0;
-  } catch { state.system = null; }
-}
-
 async function fetchHotspots(refresh = false) {
   const data = await api(`/hotspots?limit=50${refresh ? "&refresh=true" : ""}`);
-  const all = [];
-  const byPlatform = {};
-  const platformStatus = {};
+  const status = {};
+  const groups = [];
   for (const plat of data.platforms) {
-    platformStatus[plat.platform] = plat.source_status;
-    const list = [];
-    for (const item of plat.items) {
-      const enriched = {
+    status[plat.platform] = plat.source_status;
+    groups.push(
+      plat.items.map((item) => ({
         ...item,
         _displayName: plat.display_name,
-        _status: plat.source_status,
-        _color: PLATFORM_COLORS[plat.platform] || "#7D8590",
+        _color: PLATFORM_COLORS[item.platform] || "#737373",
+        _cover: item.cover_url || null,
         _heat: parseHeat(item.score),
-        _timeRaw: item.raw?.updated_at ?? item.raw?.ctime ?? item.raw?.created_at ?? plat.fetched_at ?? null,
-        _id: `${item.platform}::${item.url || item.title}`,
-      };
-      list.push(enriched);
-      all.push(enriched);
-    }
-    byPlatform[plat.platform] = list;
-  }
-  state.allItems = all;
-  state.byPlatform = byPlatform;
-  state.platformStatus = platformStatus;
-  state.lastUpdated = new Date();
-  recordTrend(all.length);
-}
-
-// ------------------------------- Theme ------------------------------------
-function toggleTheme() {
-  const cur = document.documentElement.getAttribute("data-theme");
-  const next = cur === "dark" ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", next);
-  try { localStorage.setItem("hothub-theme", next); } catch {}
-  renderTrend(); // re-read CSS-var driven colors if needed
-}
-
-// ------------------------------- Ranking ----------------------------------
-function orderedItems() {
-  let list;
-  if (state.rankTab === "hottest") {
-    list = [...state.allItems].sort((a, b) => b._heat - a._heat);
-  } else if (state.rankTab === "latest") {
-    list = [...state.allItems].sort((a, b) => timeMs(b._timeRaw) - timeMs(a._timeRaw));
-  } else {
-    list = compositeOrder(); // interleave platforms by rank
-  }
-  if (state.rankPlatform) list = list.filter((it) => it.platform === state.rankPlatform);
-  const q = state.searchQuery.trim().toLowerCase();
-  if (q) {
-    list = list.filter(
-      (it) =>
-        it.title.toLowerCase().includes(q) ||
-        (it.summary && it.summary.toLowerCase().includes(q)) ||
-        (it._displayName && it._displayName.toLowerCase().includes(q))
+        _category: classify(item.title),
+      }))
     );
   }
-  return list;
-}
-
-function compositeOrder() {
-  const groups = state.platforms.map((p) => state.byPlatform[p.name] || []);
+  // Interleave by rank so the unfiltered gallery reads as one aggregated feed
   const maxLen = groups.reduce((m, g) => Math.max(m, g.length), 0);
-  const out = [];
+  const all = [];
   for (let i = 0; i < maxLen; i++) {
-    for (const g of groups) if (g[i]) out.push(g[i]);
+    for (const g of groups) if (g[i]) all.push(g[i]);
   }
-  return out;
+  state.allItems = all;
+  state.platformStatus = status;
 }
 
-function renderRanking() {
-  const list = orderedItems();
-  const visible = list.slice(0, state.rankLimit);
-  dom.boardCount.textContent = `${list.length} 条${state.rankPlatform ? " · " + platformName(state.rankPlatform) : ""}`;
-
-  if (!visible.length) {
-    dom.rankBody.innerHTML = `<div class="state-block" style="padding:40px 20px">未找到匹配的热点</div>`;
-    dom.boardFoot.hidden = true;
-    return;
-  }
-
-  dom.rankBody.innerHTML = visible.map((it, i) => rowHTML(it, i)).join("");
-  dom.boardFoot.hidden = list.length <= state.rankLimit;
-
-  // bind action buttons
-  dom.rankBody.querySelectorAll(".ract-fav").forEach((btn) => {
-    btn.addEventListener("click", () => toggleFavorite(btn.dataset.id));
-  });
-}
-
-function rowHTML(it, i) {
-  const pos = i + 1;
-  const badge = pos <= 3
-    ? `<span class="rank-badge rank-${pos}">${pos}</span>`
-    : `<span class="rank-badge">${pos}</span>`;
-  const heatText = fmtScore(it.score) || "—";
-  const cold = it._heat > 0 ? "" : " cold";
-  const faved = state.favorites.has(it._id) ? " faved" : "";
-  const summary = it.summary && it.summary.trim();
-  const showSummary = summary && summary.length > 4 && !/^\d+$/.test(summary);
-
-  return `
-    <div class="trow">
-      <span class="col-rank">${badge}</span>
-      <span class="rtitle">
-        <a href="${it.url || "#"}" target="_blank" rel="noopener">${esc(it.title)}</a>
-        ${showSummary ? `<span class="rsummary">${esc(summary)}</span>` : ""}
-      </span>
-      <span class="rsrc rsrc-cell">
-        <span class="pdot" style="background:${it._color}"></span>${esc(it._displayName || it.platform)}
-      </span>
-      <span class="rheat${cold}">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
-        ${heatText}
-      </span>
-      <span class="rtime rtime-cell">${fmtTime(it._timeRaw)}</span>
-      <span class="ract">
-        <button class="ract-btn ract-fav${faved}" data-id="${esc(it._id)}" title="收藏">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-4.9L5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
-        </button>
-        <a class="ract-btn" href="${it.url || "#"}" target="_blank" rel="noopener" title="打开原文">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
-        </a>
-      </span>
-    </div>`;
-}
-
-function setRankTab(tab) {
-  state.rankTab = tab;
-  state.rankLimit = 15;
-  dom.rankTabs.querySelectorAll(".seg").forEach((s) =>
-    s.classList.toggle("active", s.dataset.tab === tab));
-  renderRanking();
-}
-
-function toggleFavorite(id) {
-  if (state.favorites.has(id)) state.favorites.delete(id);
-  else state.favorites.add(id);
-  saveFavorites();
-  renderRanking();
-}
-
-// ------------------------------- Platform cards ---------------------------
-function renderPlatformCards() {
-  dom.platformRail.innerHTML = state.platforms.map((p) => {
-    const items = state.byPlatform[p.name] || [];
-    const status = state.platformStatus[p.name] || "live";
-    const color = PLATFORM_COLORS[p.name] || "#7D8590";
-    const initial = PLATFORM_INITIALS[p.name] || p.display_name.slice(0, 1);
-    const live = status === "live"
-      ? `<span class="dot dot-ok"></span>实时`
-      : `<span class="dot dot-bad"></span>异常`;
-    const active = state.rankPlatform === p.name ? ' style="border-color:' + color + '"' : "";
-    return `
-      <div class="platform-card" data-platform="${p.name}" style="--pc:${color}"${active}>
-        <div class="pc-top">
-          <span class="pc-logo">${esc(initial)}</span>
-          <span class="pc-live">${live}</span>
-        </div>
-        <span class="pc-name">${esc(p.display_name)}</span>
-        <span class="pc-count"><b>${items.length}</b><span>条热点</span></span>
-      </div>`;
-  }).join("");
-
-  dom.platformRail.querySelectorAll(".platform-card").forEach((card) => {
-    card.addEventListener("click", () => {
-      const name = card.dataset.platform;
-      state.rankPlatform = state.rankPlatform === name ? null : name;
-      state.rankLimit = 15;
-      renderPlatformCards();
-      renderRanking();
-      $("#view-home").querySelector(".board").scrollIntoView({ behavior: "smooth", block: "nearest" });
-    });
-  });
-}
-
-// ------------------------------- Categories -------------------------------
+// ------------------------------- Classify ---------------------------------
 function classify(title) {
   const t = (title || "").toLowerCase();
   for (const c of CATEGORIES) {
@@ -310,106 +174,178 @@ function classify(title) {
   return "社会";
 }
 
-function renderCategories() {
+// ------------------------------- Filters ----------------------------------
+function renderCatChips() {
   const counts = {};
-  CATEGORIES.forEach((c) => (counts[c.key] = 0));
-  // ensure the 7 requested buckets exist even if unused
-  ["科技", "娱乐", "财经", "体育", "社会", "AI", "互联网"].forEach((k) => (counts[k] = counts[k] || 0));
-  for (const it of state.allItems) counts[classify(it.title)] += 1;
+  CAT_ORDER.forEach((k) => (counts[k] = 0));
+  for (const it of state.allItems) counts[it._category] = (counts[it._category] || 0) + 1;
+  counts["全部"] = state.allItems.length;
 
-  const order = ["科技", "AI", "互联网", "娱乐", "财经", "体育", "社会"];
-  const max = Math.max(1, ...order.map((k) => counts[k] || 0));
-  dom.cats.innerHTML = order.map((k) => {
-    const v = counts[k] || 0;
-    const pct = Math.round((v / max) * 100);
-    return `
-      <div class="cat">
-        <span class="cat-label">${k}</span>
-        <span class="cat-track"><span class="cat-fill" style="width:${pct}%"></span></span>
-        <span class="cat-val">${v}</span>
-      </div>`;
+  dom.catChips.innerHTML = CAT_ORDER.map((k) => {
+    const active = state.catFilter === k ? " active" : "";
+    return `<button class="chip${active}" data-cat="${esc(k)}">${esc(k)}<span class="chip-n">${counts[k] || 0}</span></button>`;
   }).join("");
+
+  dom.catChips.querySelectorAll(".chip").forEach((c) =>
+    c.addEventListener("click", () => {
+      state.catFilter = c.dataset.cat;
+      state.page = 1;
+      renderCatChips();
+      renderGallery(true);
+      renderPager();
+    })
+  );
 }
 
-// ------------------------------- Trend ------------------------------------
-function recordTrend(total) {
-  if (state.trendSamples.length === 0) {
-    // Seed a gentle session lead-in ending at the current total, so the
-    // sparkline reads as an intentional live micro-trend (not history).
-    const base = Math.max(total, 8);
-    for (let i = 0; i < 11; i++) {
-      const wobble = Math.sin(i * 0.9) * base * 0.05 + Math.cos(i * 1.7) * base * 0.03;
-      state.trendSamples.push(Math.max(0, Math.round(base * (0.88 + i * 0.011) + wobble)));
-    }
+function renderPlatformChips() {
+  const total = state.allItems.length;
+  let html = `<button class="chip${state.platformFilter === "全部" ? " active" : ""}" data-plat="全部">全部<span class="chip-n">${total}</span></button>`;
+  for (const p of state.platforms) {
+    const count = state.allItems.filter((it) => it.platform === p.name).length;
+    const color = PLATFORM_COLORS[p.name] || "#737373";
+    const active = state.platformFilter === p.name ? " active" : "";
+    html += `<button class="chip${active}" data-plat="${esc(p.name)}"><i class="pdot" style="background:${color}"></i>${esc(p.display_name)}<span class="chip-n">${count}</span></button>`;
   }
-  state.trendSamples.push(total);
-  if (state.trendSamples.length > 24) state.trendSamples.shift();
+  dom.platformChips.innerHTML = html;
+
+  dom.platformChips.querySelectorAll(".chip").forEach((c) =>
+    c.addEventListener("click", () => {
+      state.platformFilter = c.dataset.plat;
+      state.page = 1;
+      renderPlatformChips();
+      renderGallery(true);
+      renderPager();
+    })
+  );
 }
 
-function renderTrend() {
-  const data = state.trendSamples;
-  const cur = data.length ? data[data.length - 1] : 0;
-  dom.trendCurrent.textContent = cur;
+// ------------------------------- Gallery ----------------------------------
+function filteredItems() {
+  let list = state.allItems;
+  if (state.catFilter !== "全部") list = list.filter((it) => it._category === state.catFilter);
+  if (state.platformFilter !== "全部") list = list.filter((it) => it.platform === state.platformFilter);
+  return list;
+}
 
-  if (data.length >= 2) {
-    const delta = cur - data[data.length - 2];
-    dom.trendDelta.textContent = (delta >= 0 ? "+" : "") + delta;
-    dom.trendDelta.classList.toggle("down", delta < 0);
-  } else {
-    dom.trendDelta.textContent = "";
+function pageCount() {
+  return Math.max(1, Math.ceil(filteredItems().length / PAGE_SIZE));
+}
+
+function pageItems() {
+  const start = (state.page - 1) * PAGE_SIZE;
+  return filteredItems().slice(start, start + PAGE_SIZE);
+}
+
+function goPage(p) {
+  const total = pageCount();
+  state.page = Math.max(1, Math.min(p, total));
+  renderGallery(true);
+  renderPager();
+  // Scroll to top of gallery
+  dom.gallery.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderGallery(forceRebuild) {
+  const list = pageItems();
+  const emptyEl = dom.gallery.querySelector(".g-empty");
+  if (emptyEl) emptyEl.remove();
+
+  if (!list.length) {
+    dom.gallery.innerHTML = '<div class="g-empty">No matching items</div>';
+    dom.pager.innerHTML = "";
+    return;
   }
 
-  const W = 300, H = 72, pad = 8;
-  if (data.length < 2) { dom.trendLine.setAttribute("d", ""); dom.trendArea.setAttribute("d", ""); return; }
-  const max = Math.max(...data), min = Math.min(...data);
-  const range = (max - min) || 1;
-  const xs = (i) => (i / (data.length - 1)) * W;
-  const ys = (v) => H - pad - ((v - min) / range) * (H - pad * 2);
-  let line = "";
-  data.forEach((v, i) => { line += (i ? " L" : "M") + xs(i).toFixed(1) + " " + ys(v).toFixed(1); });
-  dom.trendLine.setAttribute("d", line);
-  dom.trendArea.setAttribute("d", `${line} L${W} ${H} L0 ${H} Z`);
+  // Always full rebuild for paginated views (clean state)
+  dom.gallery.innerHTML = list.map((it, i) => cardHTML(it, i)).join("");
 }
 
-// ------------------------------- Stats / status ---------------------------
-function renderMiniStats() {
-  const s = state.stats;
-  dom.msScraped.textContent = (s && s.total_hotspots) || state.allItems.length || "—";
-  dom.msApi.textContent = state.apiCalls;
-  dom.msCache.textContent = s ? Math.round(s.cache_hit_rate * 100) + "%" : "—";
-  dom.msUptime.textContent = fmtUptime(state.uptimeSeconds);
+/** Pagination controls — Swiss minimal: prev · N/M · next */
+function renderPager() {
+  const total = pageCount();
+  if (total <= 1) { dom.pager.innerHTML = ""; return; }
+
+  const p = state.page;
+  let html = '<div class="pager-inner">';
+
+  // Prev
+  html += `<button class="pg-btn" ${p <= 1 ? "disabled" : ""} data-pg="${p - 1}" aria-label="上一页">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+  </button>`;
+
+  // Page numbers
+  html += '<span class="pg-nums">';
+  const pages = buildPageRange(p, total);
+  for (const x of pages) {
+    if (x === "…") { html += '<span class="pg-dots">…</span>'; continue; }
+    html += `<button class="pg-num${x === p ? " active" : ""}" data-pg="${x}">${x}</button>`;
+  }
+  html += '</span>';
+
+  // Total indicator (Swiss minimal)
+  html += `<span class="pg-total">/ ${total}</span>`;
+
+  // Next
+  html += `<button class="pg-btn" ${p >= total ? "disabled" : ""} data-pg="${p + 1}" aria-label="下一页">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+  </button>`;
+
+  html += '</div>';
+  dom.pager.innerHTML = html;
+
+  // Bind clicks
+  dom.pager.querySelectorAll("[data-pg]").forEach((b) =>
+    b.addEventListener("click", () => goPage(parseInt(b.dataset.pg, 10)))
+  );
 }
 
-function renderSideStatus() {
-  const s = state.stats;
-  dom.ssSystem.textContent = state.system ? "正常" : "未知";
-  dom.ssApi.textContent = "在线";
-  dom.ssCache.textContent = s ? "命中 " + Math.round(s.cache_hit_rate * 100) + "%" : "—";
-  dom.ssUpdated.textContent = state.lastUpdated ? fmtClock(state.lastUpdated) : "—";
+/** Build page range like: 1 … 4 5 6 … 12 */
+function buildPageRange(p, total) {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const range = [];
+  range.push(1);
+  if (p > 3) range.push("…");
+  for (let i = Math.max(2, p - 1); i <= Math.min(total - 1, p + 1); i++) range.push(i);
+  if (p < total - 2) range.push("…");
+  range.push(total);
+  return range;
 }
 
-function renderSystemBar() {
-  if (!state.system) { dom.sysbarItems.innerHTML = ""; return; }
-  dom.sysbarItems.innerHTML = state.system.components.map((c) => {
-    const m = STATUS_MAP[c.status] || { cls: "dot-muted", text: c.status };
-    return `
-      <span class="sysbar-item" title="${esc(c.detail || "")}">
-        <span class="dot ${m.cls}"></span>
-        <span class="sname">${COMP_LABEL[c.name] || c.name}</span>
-        <span class="sdetail">${m.text}</span>
-      </span>`;
-  }).join("");
-  dom.sysbarUptime.textContent = "运行 " + fmtUptime(state.uptimeSeconds);
-}
+// ------------------------------- Card HTML --------------------------------
+function cardHTML(it, i) {
+  const rank = it.rank || i + 1;
+  const topCls = rank <= 3 ? " top" : "";
+  const heat = fmtScore(it.score);
+  const cold = it._heat > 0 ? "" : " cold";
+  const url = it.url || "#";
+  const summary = it.summary && it.summary.trim();
+  const showSum = summary && summary.length > 4 && !/^\d+$/.test(summary);
 
-function renderAll() {
-  renderPlatformCards();
-  renderRanking();
-  renderCategories();
-  renderTrend();
-  renderMiniStats();
-  renderSideStatus();
-  renderSystemBar();
+  // Route covers through backend proxy
+  const cover = it._cover ? `/img?url=${encodeURIComponent(it._cover)}` : null;
+  const thumbHTML = cover
+    ? `<a class="g-thumb" href="${esc(url)}" target="_blank" rel="noopener" aria-hidden="true">
+         <img src="${esc(cover)}" alt="" loading="lazy" decoding="async"
+              onload="this.closest('.g-thumb').classList.add('loaded')"
+              onerror="this.closest('.g-thumb').remove()">
+       </a>`
+    : "";
+
+  return `
+    <article class="g-card" data-id="${esc(it.platform)}-${rank}">
+      <span class="g-rank${topCls}">${rank}</span>
+      <div class="g-body">
+        <div class="g-head">
+          <a class="g-title" href="${esc(url)}" target="_blank" rel="noopener">${esc(it.title)}</a>
+          <span class="g-plat"><i class="pdot" style="background:${it._color}"></i>${esc(it._displayName || it.platform)}</span>
+        </div>
+        <div class="g-sub">
+          ${showSum ? `<span class="g-sum">${esc(summary)}</span>` : '<span class="g-sum"></span>'}
+          <span class="g-heat${cold}">${FLAME}${heat || "—"}</span>
+        </div>
+      </div>
+      ${thumbHTML}
+    </article>`;
 }
 
 // ------------------------------- Helpers ----------------------------------
@@ -426,7 +362,7 @@ function fmtScore(score) {
     if (n >= 1e4) return (n / 1e4).toFixed(1) + "万";
     return s;
   }
-  return s; // already human-formatted, e.g. "313.2万"
+  return s;
 }
 function parseHeat(score) {
   if (score == null) return 0;
@@ -439,91 +375,30 @@ function parseHeat(score) {
   else if (m[2] === "万" || m[2] === "w" || m[2] === "W") n *= 1e4;
   return n;
 }
-function timeMs(val) {
-  if (val == null) return 0;
-  if (typeof val === "number") return val < 1e12 ? val * 1000 : val;
-  const t = Date.parse(val);
-  return isNaN(t) ? 0 : t;
-}
-function fmtTime(val) {
-  const ms = timeMs(val);
-  if (!ms) return "—";
-  const diff = Date.now() - ms;
-  if (diff < 0) return "刚刚";
-  if (diff < 60000) return "刚刚";
-  if (diff < 3600000) return Math.floor(diff / 60000) + " 分钟前";
-  if (diff < 86400000) return Math.floor(diff / 3600000) + " 小时前";
-  return new Date(ms).toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
-}
-function fmtClock(d) {
-  return d.toLocaleTimeString("zh-CN", { hour12: false });
-}
-function fmtUptime(s) {
-  s = Math.max(0, Math.floor(s));
-  const m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
-  if (d > 0) return `${d}d ${h % 24}h`;
-  if (h > 0) return `${h}h ${m % 60}m`;
-  if (m > 0) return `${m}m ${s % 60}s`;
-  return `${s}s`;
-}
-function platformName(name) {
-  const p = state.platforms.find((x) => x.name === name);
-  return p ? p.display_name : name;
-}
-function loadFavorites() {
-  try { return JSON.parse(localStorage.getItem("hothub-favs") || "[]"); } catch { return []; }
-}
-function saveFavorites() {
-  try { localStorage.setItem("hothub-favs", JSON.stringify([...state.favorites])); } catch {}
+
+// ------------------------------- Skeleton --------------------------------
+function renderSkeletons(count) {
+  count = count || 8;
+  dom.gallery.innerHTML = Array.from({ length: count }, () => `
+    <article class="g-card skeleton" aria-hidden="true">
+      <span class="g-rank"></span>
+      <div class="g-body">
+        <div class="sk-line sk-title"></div>
+        <div class="sk-line sk-sum"></div>
+      </div>
+    </article>
+  `).join("");
 }
 
-// ------------------------------- Navigation -------------------------------
-function selectNav(view) {
-  $$(".nav-item").forEach((i) => i.classList.toggle("active", i.dataset.view === view));
-  if (view === "home") {
-    dom.placeholder.hidden = true;
-  } else {
-    const meta = VIEW_META[view] || { title: "模块", desc: "开发中。" };
-    dom.placeholderTitle.textContent = meta.title;
-    dom.placeholderDesc.textContent = meta.desc;
-    dom.placeholder.hidden = false;
-  }
+// ------------------------------- Render / Init ---------------------------
+function renderAll() {
+  state.page = 1;
+  renderCatChips();
+  renderPlatformChips();
+  renderGallery(true);
+  renderPager();
 }
 
-// ------------------------------- Events -----------------------------------
-dom.rankTabs.querySelectorAll(".seg").forEach((seg) => {
-  seg.addEventListener("click", () => setRankTab(seg.dataset.tab));
-});
-dom.btnMore.addEventListener("click", () => { state.rankLimit += 15; renderRanking(); });
-dom.search.addEventListener("input", (e) => {
-  state.searchQuery = e.target.value; state.rankLimit = 15; renderRanking();
-});
-dom.btnTheme.addEventListener("click", toggleTheme);
-dom.btnRefresh.addEventListener("click", refreshAll);
-dom.btnRetry.addEventListener("click", init);
-dom.placeholderBack.addEventListener("click", () => selectNav("home"));
-
-$$(".nav-item").forEach((item) => {
-  item.addEventListener("click", (e) => { e.preventDefault(); selectNav(item.dataset.view); });
-});
-
-document.addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); dom.search.focus(); }
-});
-
-// Live uptime ticker (from the real base reported by /system/status)
-setInterval(() => {
-  if (!state.system) return;
-  state.uptimeSeconds += 1;
-  dom.msUptime.textContent = fmtUptime(state.uptimeSeconds);
-  dom.sysbarUptime.textContent = "运行 " + fmtUptime(state.uptimeSeconds);
-}, 1000);
-
-// ------------------------------- Init / refresh ---------------------------
-function showLoading(on) {
-  dom.loading.hidden = !on;
-  dom.error.hidden = true;
-}
 function showError(err) {
   dom.loading.hidden = true;
   dom.error.hidden = false;
@@ -531,24 +406,35 @@ function showError(err) {
 }
 
 async function refreshAll() {
-  const icon = dom.btnRefresh;
-  icon.disabled = true;
+  dom.btnRefresh.disabled = true;
+  dom.btnRefresh.classList.add("spinning");
   try {
-    await Promise.all([fetchStats(), fetchHotspots(true), fetchSystem()]);
+    await fetchHotspots(true);
     renderAll();
-  } catch (err) { showError(err); }
-  finally { icon.disabled = false; }
+  } catch (err) {
+    showError(err);
+  } finally {
+    dom.btnRefresh.disabled = false;
+    dom.btnRefresh.classList.remove("spinning");
+  }
 }
 
 async function init() {
-  showLoading(true);
+  dom.loading.hidden = true;  // never show spinner — skeletons instead
+  renderSkeletons(8);
   try {
-    await Promise.all([fetchStats(), fetchPlatforms(), fetchHotspots(false), fetchSystem()]);
-    showLoading(false);
+    await Promise.all([fetchPlatforms(), fetchHotspots(false)]);
     renderAll();
   } catch (err) {
     showError(err);
   }
 }
+
+// ------------------------------- Init -----------------------------------
+initTheme();
+document.getElementById("btn-theme").addEventListener("click", toggleTheme);
+
+dom.btnRefresh.addEventListener("click", refreshAll);
+dom.btnRetry.addEventListener("click", init);
 
 init();

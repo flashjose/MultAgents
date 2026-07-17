@@ -1,7 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c \"from app.main import app; print\\('OK'\\)\")"
+      "Bash(python -c \"from app.main import app; print\\('OK'\\)\")",
+      "Bash(curl -s http://127.0.0.1:8000/)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code} %{size_download}bytes\" \"http://127.0.0.1:8000/img?url=http://i2.hdslb.com/bfs/archive/485bfd5a9d30553c763557b578fd2b990334b655.jpg\")",
+      "Bash(python \"C:/Users/SPARROW/.claude/plugins/cache/ui-ux-pro-max-skill/ui-ux-pro-max/2.11.0/.claude/skills/ui-ux-pro-max/scripts/search.py\" \"Swiss Minimalism monochrome black white dark mode grid typography\" --design-system -p \"HotHub\" -f markdown)",
+      "Bash(python \"C:/Users/SPARROW/.claude/plugins/cache/ui-ux-pro-max-skill/ui-ux-pro-max/2.11.0/.claude/skills/ui-ux-pro-max/scripts/search.py\" \"dark mode monochrome black white contrast minimal\" --domain color -n 5)",
+      "Bash(python \"C:/Users/SPARROW/.claude/plugins/cache/ui-ux-pro-max-skill/ui-ux-pro-max/2.11.0/.claude/skills/ui-ux-pro-max/scripts/search.py\" \"theme toggle dark light switch system preference\" --domain ux -n 5)",
+      "Bash(curl -s -o /dev/null -w \"html:%{http_code} css:%{http_code} js:%{http_code}\" http://127.0.0.1:8000/ http://127.0.0.1:8000/static/css/style.css http://127.0.0.1:8000/static/js/app.js)",
+      "Bash(python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload)",
+      "Bash(curl -s http://127.0.0.1:8000/static/js/app.js)",
+      "Bash(curl -s http://127.0.0.1:8000/static/css/style.css)",
+      "Bash(curl -s -o /dev/null -w \"health:%{http_code} html:%{http_code} css:%{http_code} js:%{http_code}\" http://127.0.0.1:8000/health http://127.0.0.1:8000/ http://127.0.0.1:8000/static/css/style.css http://127.0.0.1:8000/static/js/app.js)"
     ]
   }
 }
