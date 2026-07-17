@@ -55,21 +55,29 @@ function applyThemeInk(resolved, btn) {
         { clipPath: `circle(${r}px at ${cx}px ${cy}px)` }
       ],
       {
-        duration: 500,
-        easing: 'cubic-bezier(0.4, 0, 0.2, 1)',
+        duration: 800,
+        easing: 'cubic-bezier(0.5, 0, 0.0, 1)',
         pseudoElement: '::view-transition-new(root)'
       }
     );
   });
 }
 
+let _themeBusy = false;
+
 function toggleTheme() {
+  if (_themeBusy) return;  // skip if animation still running
+  _themeBusy = true;
+
   const current = getTheme();
   const next = current === "system" ? "light" : current === "light" ? "dark" : "system";
   localStorage.setItem(THEME_KEY, next);
 
   const btn = document.getElementById("btn-theme");
   applyThemeInk(resolveTheme(next), btn);
+
+  // Unlock after animation completes
+  setTimeout(() => { _themeBusy = false; }, 900);
 }
 
 function initTheme() {
@@ -96,7 +104,7 @@ const state = {
 // ------------------------------- Constants --------------------------------
 const PLATFORM_COLORS = {
   zhihu: "#0066FF", weibo: "#E6162D", bilibili: "#FB7299",
-  douyin: "#12B7B0", toutiao: "#E13D3D", ithome: "#D9382B", baidu: "#2932E1",
+  douyin: "#111111", toutiao: "#E13D3D", ithome: "#D9382B", baidu: "#2932E1",
 };
 
 const CATEGORIES = [

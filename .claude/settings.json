@@ -11,7 +11,8 @@
       "Bash(python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload)",
       "Bash(curl -s http://127.0.0.1:8000/static/js/app.js)",
       "Bash(curl -s http://127.0.0.1:8000/static/css/style.css)",
-      "Bash(curl -s -o /dev/null -w \"health:%{http_code} html:%{http_code} css:%{http_code} js:%{http_code}\" http://127.0.0.1:8000/health http://127.0.0.1:8000/ http://127.0.0.1:8000/static/css/style.css http://127.0.0.1:8000/static/js/app.js)"
+      "Bash(curl -s -o /dev/null -w \"health:%{http_code} html:%{http_code} css:%{http_code} js:%{http_code}\" http://127.0.0.1:8000/health http://127.0.0.1:8000/ http://127.0.0.1:8000/static/css/style.css http://127.0.0.1:8000/static/js/app.js)",
+      "Bash(curl -s -o /dev/null -w \"health:%{http_code} css:%{http_code} js:%{http_code}\" http://127.0.0.1:8000/health http://127.0.0.1:8000/static/css/style.css http://127.0.0.1:8000/static/js/app.js)"
     ]
   }
 }
